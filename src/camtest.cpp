@@ -579,7 +579,7 @@ int main(int argc, char** argv) {
     int k = cv::waitKey(5);
     if (k % 256 == 's') {
       // Save color image
-      cv::imwrite("frame.png", frame);
+      cv::imwrite("./images/azure/frame.png", frame);
       std::cout << "wrote frame.png\n";
 
       // Save a colored PLY point cloud aligned to the color image and add marker corner points
@@ -591,7 +591,7 @@ int main(int argc, char** argv) {
                        k4a_depth_image_handle,
                        k4a_color_image_handle,
                        marker_corners_3d,
-                       "point_cloud.ply");
+                       "./images/azure/point_cloud.ply");
         if (pc_success) {
           std::cout << "wrote point_cloud.ply\n";
         } else {
@@ -611,7 +611,7 @@ int main(int argc, char** argv) {
 
   // show point cloud with markers
   try {
-    cv::Mat pc_vis = render_ply_projection("point_cloud.ply", 900, 900);
+    cv::Mat pc_vis = render_ply_projection("./images/azure/point_cloud.ply", 900, 900);
     if (!pc_vis.empty()) {
       cv::imshow("Saved point cloud", pc_vis);
       cv::waitKey(0);
