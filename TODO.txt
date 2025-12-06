@@ -1,0 +1,5 @@
+- update readme
+- add azure installation instructions
+- add playback functionalities
+- allow not azure camera
+- handle filenames
