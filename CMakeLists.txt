@@ -21,6 +21,15 @@ find_library(GLUT_LIBRARY glut)
 
 include(FindPkgConfig)
 
+# DEPENDENCIES #################################################################
+if(WIN32)
+  # On Windows, we rely on env variables to find install paths
+  if(NOT DEFINED ENV{OpenCV_DIR})
+    message(FATAL_ERROR "OpenCV_DIR env var not set, please set it to the OpenCV install directory")
+  endif()
+  set(OpenCV_DIR "$ENV{OpenCV_DIR}\\build" CACHE PATH "OpenCV build directory" FORCE)
+endif()
+
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 add_definitions(-DNOMINMAX -DHAVE_OPENCV)
@@ -47,6 +56,15 @@ if (APPLE OR UNIX)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsign-compare -frounding-math")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wsign-compare -frounding-math")
 endif()
+
+if(WIN32)
+  set( CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" ${CMAKE_MODULE_PATH} )
+endif()
+
+if(WIN32)
+  find_package(k4a)
+endif()
+
 
 add_subdirectory(src)
 

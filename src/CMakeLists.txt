@@ -18,8 +18,8 @@ set(AT_LIBS apriltags ${OpenCV_LIBS})
 
 target_link_libraries(apriltags ${AT_LIBS})
 
-add_executable(camtest camtest.cpp)
-target_link_libraries(camtest ${AT_LIBS})
+add_executable(camtest camtest.cpp transformation_helpers.cpp)
+target_link_libraries(camtest ${AT_LIBS} k4a::k4a)
 
 add_executable(tagtest tagtest.cpp)
 target_link_libraries(tagtest ${AT_LIBS})
