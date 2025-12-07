@@ -63,6 +63,7 @@ endif()
 
 if(WIN32)
   find_package(k4a)
+  find_package(k4arecord)
 endif()
 
 

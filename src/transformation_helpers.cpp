@@ -22,6 +22,7 @@ struct color_point_t
 void tranformation_helpers_write_point_cloud(const k4a_image_t point_cloud_image,
                                              const k4a_image_t color_image,
                                              const k4a_float3_t* marker_corners_3d,
+                                             int marker_corners_count,
                                              const char *file_name)
 {
     std::vector<color_point_t> points;
@@ -31,6 +32,7 @@ void tranformation_helpers_write_point_cloud(const k4a_image_t point_cloud_image
 
     int16_t *point_cloud_image_data = (int16_t *)(void *)k4a_image_get_buffer(point_cloud_image);
     uint8_t *color_image_data = k4a_image_get_buffer(color_image);
+
 
     for (int i = 0; i < width * height; i++)
     {
@@ -44,7 +46,6 @@ void tranformation_helpers_write_point_cloud(const k4a_image_t point_cloud_image
         }
 
         // Keep original colored points; we'll append synthetic red spheres around marker corners later.
-
         point.rgb[0] = color_image_data[4 * i + 0];
         point.rgb[1] = color_image_data[4 * i + 1];
         point.rgb[2] = color_image_data[4 * i + 2];
@@ -54,7 +55,6 @@ void tranformation_helpers_write_point_cloud(const k4a_image_t point_cloud_image
         {
             continue;
         }
-
         points.push_back(point);
     }
 
@@ -89,10 +89,9 @@ void tranformation_helpers_write_point_cloud(const k4a_image_t point_cloud_image
     ofs_text.write(ss.str().c_str(), (std::streamsize)ss.str().length());
 
     // Add synthetic red spheres around each provided marker corner.
-    // marker_corners_3d contains up to 16 entries; entries with all-zero are ignored.
     const int sphere_radius_mm = 10; // 10 mm
     const int step_mm = 5; // spacing between synthetic points
-    for (size_t m = 0; m < 16; ++m)
+    for (int m = 0; m < marker_corners_count; ++m)
     {
         float mx = marker_corners_3d[m].xyz.x;
         float my = marker_corners_3d[m].xyz.y;
@@ -151,6 +150,7 @@ void tranformation_helpers_write_point_cloud(const k4a_image_t point_cloud_image
     ofs3 << PLY_END_HEADER << std::endl;
     ofs3.write(ss2.str().c_str(), (std::streamsize)ss2.str().length());
     ofs3.close();
+
 }
 
 k4a_image_t downscale_image_2x2_binning(const k4a_image_t color_image)
