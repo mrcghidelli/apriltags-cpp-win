@@ -18,5 +18,11 @@ set(AT_LIBS apriltags ${OpenCV_LIBS})
 
 target_link_libraries(apriltags ${AT_LIBS})
 
-add_executable(azure_apriltags azure_apriltags.cpp transformation_helpers.cpp)
-target_link_libraries(azure_apriltags ${AT_LIBS} k4a::k4a k4a::k4arecord)
+if(k4a_FOUND AND k4arecord_FOUND AND NOT SKIP_KINECT_AZURE)
+  add_executable(camera_apriltags camera_apriltags.cpp azure_kinect_helpers.cpp)
+  target_link_libraries(camera_apriltags ${AT_LIBS} k4a::k4a k4a::k4arecord)
+  target_compile_definitions(camera_apriltags PRIVATE KINECT_AZURE_LIBS)
+else()
+  add_executable(camera_apriltags camera_apriltags.cpp)
+  target_link_libraries(camera_apriltags ${AT_LIBS})
+endif()

@@ -6,6 +6,7 @@ project(APRILTAGS)
 
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_BINARY_DIR})
 set(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR})
+option(SKIP_KINECT_AZURE "Do not use Kinect Azure cameras" OFF)
 
 if(APPLE)
   include_directories(/opt/local/include) # MacPorts
