@@ -31,8 +31,21 @@ if(WIN32)
   set(OpenCV_DIR "$ENV{OpenCV_DIR}\\build" CACHE PATH "OpenCV build directory" FORCE)
 endif()
 
+include(FetchContent)
+set(BUILD_TESTING OFF CACHE INTERNAL "")
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+FetchContent_Declare(json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(json)
+
 find_package(OpenCV REQUIRED)
-include_directories(${OpenCV_INCLUDE_DIRS})
+include_directories(
+  ${OpenCV_INCLUDE_DIRS}
+  ${json_SOURCE_DIR}/include
+  )
 add_definitions(-DNOMINMAX -DHAVE_OPENCV)
 #pkg_search_module(OPENCV REQUIRED opencv>=2.3 opencv-2.3.1)
 #include_directories(${OPENCV_INCLUDE_DIRS})

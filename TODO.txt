@@ -1,5 +1,4 @@
 - update readme
 - add azure installation instructions
-- allow not azure camera
-- handle filenames
-- save json of the detected apriltags
+- estimate z corner pose with marker size if not azure
+- handle frame counter to consider also the not valid frames. 

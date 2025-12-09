@@ -30,12 +30,20 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/imgproc/imgproc_c.h>
 #include <opencv2/videoio.hpp>
+#include <algorithm>
+#include <filesystem>
+
+#include <nlohmann/json.hpp>
 
 #include "CameraUtil.h"
+
 
 #define DEFAULT_CAMERA_DEVICE "opencv"
 #define DEFAULT_TAG_FAMILY "Tag36h11"
 #define DEFAULT_TAG_SIZE_M 0.22
+#define DEFAULT_MIN_ID 0
+#define DEFAULT_MAX_ID 20
+#define DEFAULT_OUTPUT_DIR "images"
 
 #ifdef KINECT_AZURE_LIBS
 #include <k4a/k4a.h>
@@ -44,10 +52,14 @@
 #include "azure_kinect_helpers.h"
 #endif
 
+using json = nlohmann::json;
+
 typedef struct CameraOptions {
-  CameraOptions() :
+    CameraOptions() :
         params(),
         family_str(DEFAULT_TAG_FAMILY),
+        min_id(DEFAULT_MIN_ID),
+        max_id(DEFAULT_MAX_ID),
         camera_type(DEFAULT_CAMERA_DEVICE),
         error_fraction(1),
         device_num(0),
@@ -56,22 +68,77 @@ typedef struct CameraOptions {
         frame_width(0),
         frame_height(0),
         mirror_display(false),
-        file_path("")
-  {
-  }
-  TagDetectorParams params;
-  std::string family_str;
-  std::string camera_type;
-  double error_fraction;
-  int device_num;
-  double focal_length;
-  double tag_size;
-  int frame_width;
-  int frame_height;
-  bool mirror_display;
-  std::string file_path;
+        input_file_path(""),
+        output_file_path(DEFAULT_OUTPUT_DIR)
+    {
+    }
+    TagDetectorParams params;
+    std::string family_str;
+    int min_id;
+    int max_id;
+    std::string camera_type;
+    double error_fraction;
+    int device_num;
+    double focal_length;
+    double tag_size;
+    int frame_width;
+    int frame_height;
+    bool mirror_display;
+    std::string input_file_path;
+    std::string output_file_path;
 } CameraOptions;
 
+// Struttura per memorizzare i corner di un tag nel frame
+struct TagCorners {
+    int id;
+    std::vector<cv::Point3f> corners; // 4 corner points
+};
+
+// Mappa per accumulare dati corner: frame_number -> vector<TagCorners>
+std::map<int, std::vector<TagCorners>> frames_corners_data;
+
+// Function to save corners data to JSON file
+void save_corners_to_json(const std::string& filename) {
+    json output;
+    
+    // Iterate through each frame
+    for (const auto& frame_pair : frames_corners_data) {
+        int frame_num = frame_pair.first;
+        const auto& tags_in_frame = frame_pair.second;
+        
+        json frame_data;
+        
+        // Iterate through each tag detected in this frame
+        for (const auto& tag : tags_in_frame) {
+            json tag_entry;
+            
+            // Add the 4 corner points for this tag
+            json corners_array = json::array();
+            for (const auto& corner : tag.corners) {
+                json corner_obj;
+                corner_obj["x"] = corner.x;
+                corner_obj["y"] = corner.y;
+                corner_obj["z"] = corner.z;
+                corners_array.push_back(corner_obj);
+            }
+            
+            tag_entry["corners"] = corners_array;
+            frame_data[std::to_string(tag.id)] = tag_entry;
+        }
+        
+        output[std::to_string(frame_num)] = frame_data;
+    }
+    
+    // Write to file
+    std::ofstream json_file(filename);
+    if (json_file.is_open()) {
+        json_file << output.dump(4); // Pretty print with indentation
+        json_file.close();
+        std::cout << "Saved corner data to " << filename << std::endl;
+    } else {
+        std::cerr << "Failed to open JSON file for writing: " << filename << std::endl;
+    }
+}
 
 void print_usage(const char* tool_name, FILE* output=stderr) {
 
@@ -93,6 +160,8 @@ Run a tool to test tag detection. Options:\n\
  -r              Refine all quads using template tracker.\n\
  -n              Use the new quad detection algorithm.\n\
  -f FAMILY       Look for the given tag family (default \"%s\")\n\
+ -t MIN_ID       Set the minimum tag ID to detect (default %d)\n\
+ -T MAX_ID       Set the maximum tag ID to detect (default %d)\n\
  -c CAMERA       Use the given camera device, chose between \"azure\" or \"opencv\" (default \"%s\")\n\
  -e FRACTION     Set error detection fraction (default %f)\n\
  -d DEVICE       Set camera device number (default %d)\n\
@@ -101,21 +170,25 @@ Run a tool to test tag detection. Options:\n\
  -W WIDTH        Set the camera image width in pixels\n\
  -H HEIGHT       Set the camera image height in pixels\n\
  -M              Toggle display mirroring\n\
- -i FILEPATH     Set recording file path\n",
+ -i FILEPATH     Set recording file path\n\
+ -o FILEPATH     Set output directory for saved images (default \"%s\" or input file directory if not specified)\n",
  
-          tool_name,
-          p.sigma,
-          p.segSigma,
-          p.thetaThresh,
-          p.magThresh,
-          p.adaptiveThresholdValue,
-          p.adaptiveThresholdRadius,
-          DEFAULT_TAG_FAMILY,
-          DEFAULT_CAMERA_DEVICE,
-          o.error_fraction,
-          o.device_num,
-          o.focal_length,
-          o.tag_size);
+            tool_name,
+            p.sigma,
+            p.segSigma,
+            p.thetaThresh,
+            p.magThresh,
+            p.adaptiveThresholdValue,
+            p.adaptiveThresholdRadius,
+            DEFAULT_TAG_FAMILY,
+            DEFAULT_MIN_ID,
+            DEFAULT_MAX_ID,
+            DEFAULT_CAMERA_DEVICE,
+            o.error_fraction,
+            o.device_num,
+            o.focal_length,
+            o.tag_size,
+            DEFAULT_OUTPUT_DIR);
 
   fprintf(output, "Known tag families:");
   TagFamily::StringArray known = TagFamily::families();
@@ -127,7 +200,7 @@ Run a tool to test tag detection. Options:\n\
 
 CameraOptions parse_options(int argc, char** argv) {
   CameraOptions opts;
-  const char* options_str = "hDS:s:a:m:V:N:brnf:c:e:d:F:z:W:H:Mi:";
+  const char* options_str = "hDS:s:a:m:V:N:brnf:t:T:c:e:d:F:z:W:H:Mi:o:";
   int c;
   while ((c = getopt(argc, argv, options_str)) != -1) {
     switch (c) {
@@ -144,6 +217,8 @@ CameraOptions parse_options(int argc, char** argv) {
         case 'r': opts.params.refineQuads = true; break;
         case 'n': opts.params.newQuadAlgorithm = true; break;
         case 'f': opts.family_str = optarg; break;
+        case 't': opts.min_id = atoi(optarg); break;
+        case 'T': opts.max_id = atoi(optarg); break;
         case 'c': opts.camera_type = optarg; break;
         case 'e': opts.error_fraction = atof(optarg); break;
         case 'd': opts.device_num = atoi(optarg); break;
@@ -152,7 +227,8 @@ CameraOptions parse_options(int argc, char** argv) {
         case 'W': opts.frame_width = atoi(optarg); break;
         case 'H': opts.frame_height = atoi(optarg); break;
         case 'M': opts.mirror_display = !opts.mirror_display; break;
-        case 'i': opts.file_path = optarg; break;
+        case 'i': opts.input_file_path = optarg; break;
+        case 'o': opts.output_file_path = optarg; break;
         default:
             fprintf(stderr, "\n");
             print_usage(argv[0], stderr);
@@ -179,9 +255,33 @@ int main(int argc, char** argv) {
     
     TagDetectionArray detections;
 
+    int max_num_corners_marker = (opts.max_id - opts.min_id + 1)*4;
+
+    // Frame counter for JSON data
+    int frame_number = 0;
+
+    // check options if valid
+    // opts.camera_type should be either "azure" or "opencv"
+    // if "azure" is selected, the program will try to use Kinect Azure SDK
+    // and if not found, it will exit with error
+    // if "opencv" is selected, it will use OpenCV VideoCapture
+    if (opts.camera_type == "azure"){
+#ifndef KINECT_AZURE_LIBS
+        std::cerr << "\033[1;31mError: Azure Kinect SDK not found. Please install the SDK or use \"opencv\" camera option.\033[0m" << std::endl;
+        return -1;
+#endif
+    }
+    
     std::cout << "Using camera type: " << opts.camera_type << std::endl;
     std::cout << "Using tag family: " << opts.family_str << std::endl;
     std::cout << "Tag size: " << opts.tag_size << " meters" << std::endl;
+
+    if (opts.input_file_path != "") {
+        std::cout << "Recording file path: " << opts.input_file_path << std::endl;
+    }
+    if (opts.output_file_path != DEFAULT_OUTPUT_DIR) {
+        std::cout << "Output directory for saved images: " << opts.output_file_path << std::endl;
+    }
 
     // Set up camera
     cv::Mat frame;
@@ -202,31 +302,31 @@ int main(int argc, char** argv) {
     k4a_playback_t kinect_mkv_playback_handle; /**< the Kinect Azure playback handle from MKV playback */
     k4a_capture_t kinect_mkv_capture_handle; /**< the Kinect Azure capture object from MKV playback */
 
-    k4a_float3_t marker_corners_3d[16];
+    std::vector<k4a_float3_t> marker_corners_3d(max_num_corners_marker);
 
     // frames to save when 's' is pressed
     k4a::image saved_k4a_depth_image;
     k4a::image saved_k4a_color_image;
-    k4a_float3_t saved_marker_corners_3d[16];
+    std::vector<k4a_float3_t> saved_marker_corners_3d(max_num_corners_marker);
     int saved_marker_corners_count = 0;
 #endif
 
     if (opts.camera_type == "azure") {
 #ifdef KINECT_AZURE_LIBS
-        if (!opts.file_path.empty()) {
+        if (!opts.input_file_path.empty()) {
             std::cout << "\n[MKV Recording Mode]" << std::endl;
-            std::cout << "Loading Azure Kinect MKV file: " << opts.file_path << std::endl;
+            std::cout << "Loading Azure Kinect MKV file: " << opts.input_file_path << std::endl;
             std::cout << std::endl;
 
             // check if file exists 
-            std::ifstream mkv_file(opts.file_path);
+            std::ifstream mkv_file(opts.input_file_path);
             if (!mkv_file.good()) {
-                std::cerr << "Error: MKV file does not exist: " << opts.file_path << std::endl;
+                std::cerr << "Error: MKV file does not exist: " << opts.input_file_path << std::endl;
                 return -1;
             }
 
             // A C++ Wrapper for the k4a_playback_t does not exist, so we use the C API directly
-            if (k4a_playback_open(opts.file_path.c_str(), &kinect_mkv_playback_handle) != K4A_RESULT_SUCCEEDED) {
+            if (k4a_playback_open(opts.input_file_path.c_str(), &kinect_mkv_playback_handle) != K4A_RESULT_SUCCEEDED) {
                 std::cerr << "\033[1;31mFailed to open mkv file for playback\033[0m" << std::endl;
                 return -1;
             }
@@ -258,7 +358,13 @@ int main(int argc, char** argv) {
             device_config.color_resolution = K4A_COLOR_RESOLUTION_720P;
             device_config.depth_mode = K4A_DEPTH_MODE_NFOV_UNBINNED;
 
-            kinect_device = k4a::device::open(0);
+            try {
+                kinect_device = k4a::device::open(opts.device_num);
+            } catch (const std::exception& e) {
+                std::cerr << "\033[1;31mFailed to open Azure Kinect device. Error: " << e.what() << "\033[0m" << std::endl;
+                return -1;
+            }
+
             kinect_device.start_cameras(&device_config);
 
             //camera_sn = kinect_device.get_serialnum();
@@ -271,7 +377,7 @@ int main(int argc, char** argv) {
         }
 
         while (!k4a_color_image_to_cv_mat(k4a_color_image, frame)){
-            if (!opts.file_path.empty()) {
+            if (!opts.input_file_path.empty()) {
                 // Try to get the next capture
                 if (k4a_playback_get_next_capture(kinect_mkv_playback_handle, &kinect_mkv_capture_handle) != K4A_RESULT_SUCCEEDED)
                     std::cout << "\033[1;31mFailed to get next capture from dummy file during setup\033[0m" << std::endl;
@@ -292,17 +398,17 @@ int main(int argc, char** argv) {
 #endif
     } else if (opts.camera_type == "opencv") {
 
-        if (!opts.file_path.empty()) {
+        if (!opts.input_file_path.empty()) {
             std::cout << "\n[Recording Mode]" << std::endl;
-            std::cout << "Loading recorded file: " << opts.file_path << std::endl;
+            std::cout << "Loading recorded file: " << opts.input_file_path << std::endl;
             std::cout << std::endl;
 
-            if (!std::ifstream(opts.file_path).good()) {
-                std::cerr << "Error: video file does not exist: " << opts.file_path << std::endl;
+            if (!std::ifstream(opts.input_file_path).good()) {
+                std::cerr << "Error: video file does not exist: " << opts.input_file_path << std::endl;
                 return -1;
             }
 
-            vc.open(opts.file_path);
+            vc.open(opts.input_file_path);
 
             std::cout << "Camera resolution: "
                         << vc.get(cv::CAP_PROP_FRAME_WIDTH) << "x"
@@ -315,6 +421,11 @@ int main(int argc, char** argv) {
             std::cout << std::endl;
 
             vc.open(opts.device_num);
+
+            if (!vc.isOpened()) {
+                std::cerr << "Error: could not open camera device: " << opts.device_num << std::endl;
+                return -1;
+            }
 
             if (opts.frame_width && opts.frame_height) {
                 // Use uvcdynctrl to figure this out dynamically at some point?
@@ -349,13 +460,22 @@ int main(int argc, char** argv) {
 
     // acquire frames
     while (true) {
+        marker_corners_count = 0; // reset per frame to avoid stale or overflowed data
         if (opts.camera_type == "azure") {
 #ifdef KINECT_AZURE_LIBS
-            if (!opts.file_path.empty()) {
-                if (k4a_playback_get_next_capture(kinect_mkv_playback_handle, &kinect_mkv_capture_handle) != K4A_RESULT_SUCCEEDED){
+            if (!opts.input_file_path.empty()) {
+                
+                k4a_stream_result_t get_capture_result = k4a_playback_get_next_capture(kinect_mkv_playback_handle, &kinect_mkv_capture_handle);
+                while (get_capture_result == K4A_STREAM_RESULT_FAILED){
+                    get_capture_result = k4a_playback_get_next_capture(kinect_mkv_playback_handle, &kinect_mkv_capture_handle);
                     std::cout << "\033[1;31mFailed to get next capture from mkv file during setup\033[0m" << std::endl;
-                    continue;
                 }
+
+                if (get_capture_result == K4A_STREAM_RESULT_EOF) {
+                    std::cout << "End of MKV file reached" << std::endl;
+                    break; 
+                }
+
                 k4a_rgbd_capture = k4a::capture(kinect_mkv_capture_handle);
             }
             else{
@@ -369,6 +489,9 @@ int main(int argc, char** argv) {
                 std::cout << "\033[1;31mFailed to convert k4a::image to cv::Mat!\033[0m" << std::endl;
                 continue;
             }   
+
+
+
 #endif
         } else if (opts.camera_type == "opencv") {
            vc >> frame;
@@ -391,6 +514,13 @@ int main(int argc, char** argv) {
             for (size_t i=0; i<detections.size(); ++i) {
                 const TagDetection &d = detections[i];
 
+                // Filter by ID range
+                if (d.id < opts.min_id || d.id > opts.max_id) {
+                    continue; // Skip this detection
+                }
+                
+                TagCorners tag_corners;
+                tag_corners.id = d.id;
                 // for each corner of the detected tag compute 3D location
                 for (int corner_idx = 0; corner_idx < 4; ++corner_idx) {
 
@@ -423,8 +553,13 @@ int main(int argc, char** argv) {
                             kinect_calibration.convert_2d_to_3d(depth_point, static_cast<float>(depth_value), K4A_CALIBRATION_TYPE_DEPTH, K4A_CALIBRATION_TYPE_COLOR, &this_corner_3d);
                             
                             // store into marker array if space
-                            marker_corners_3d[marker_corners_count] = this_corner_3d;
-                            ++marker_corners_count;
+                            if (marker_corners_count < max_num_corners_marker) {
+                                marker_corners_3d[marker_corners_count] = this_corner_3d;
+
+                                // also store into tag corners for JSON export
+                                tag_corners.corners.push_back(cv::Point3f(this_corner_3d.xyz.x, this_corner_3d.xyz.y, this_corner_3d.xyz.z));
+                                ++marker_corners_count;
+                            }
                             
                         }
                         catch(const std::exception& e)
@@ -436,13 +571,14 @@ int main(int argc, char** argv) {
                     }
                     else if (opts.camera_type == "opencv") {
                         // For opencv camera, we do not have depth information, so we skip 3D corner computation
+                        tag_corners.corners.push_back(cv::Point3f(d.p[corner_idx].x, d.p[corner_idx].y, 0.0f));
                     }
-                
-                    
-                
+    
                 }
 
-                // log results
+                // Accumulate corner data for JSON export                
+                frames_corners_data[frame_number].push_back(tag_corners);
+             
 
                 // Draw a small filled circle on each corner of the detected tag
                 cv::Scalar cornerColor(0, 255, 0); // green (B,G,R)
@@ -476,13 +612,16 @@ int main(int argc, char** argv) {
 
         cv::imshow(win, show);
         int k = cv::waitKey(5);
+        
+        // Increment frame counter at end of processing
+        ++frame_number;
         if (k % 256 == 's') {
             
             if (opts.camera_type == "azure") {
 #ifdef KINECT_AZURE_LIBS
                 saved_k4a_depth_image = k4a_depth_image;
                 saved_k4a_color_image = k4a_color_image;
-                std::copy(std::begin(marker_corners_3d), std::end(marker_corners_3d), std::begin(saved_marker_corners_3d));
+                std::copy(marker_corners_3d.begin(), marker_corners_3d.end(), saved_marker_corners_3d.begin());
                 saved_marker_corners_count = marker_corners_count;
 #endif
             }
@@ -492,7 +631,7 @@ int main(int argc, char** argv) {
             }
             std::cout << "Loaded the current frame image (and point cloud if available) to save." << std::endl;
             std::cout << "The data will be saved in memory when the program exits." << std::endl;
-            std::cout << "Press 's' again to overwrite frame to save." << std::endl;
+            std::cout << "Press 's' again to overwrite the frame to save." << std::endl;
         }
         else if (k % 256 == 27) { // ESC key
             std::cout << "ESC pressed. Exiting main loop." << std::endl;
@@ -501,15 +640,50 @@ int main(int argc, char** argv) {
        
     }  
 
-    // store / display results
-    // Save color image
-    cv::imwrite("./images/azure/frame.png", frame);
-    std::cout << "wrote frame.png\n";
+    // Prepare filename and directory
+    std::string filename_output;
+    std::string base_filename;
+    
+    // Determine base filename
+    if (opts.camera_type == "azure") {
+#ifdef KINECT_AZURE_LIBS
+        base_filename = opts.input_file_path.empty() 
+            ? "SN" + kinect_device.get_serialnum()
+            : opts.input_file_path.substr(opts.input_file_path.find_last_of("/\\") + 1, opts.input_file_path.find_last_of(".") - opts.input_file_path.find_last_of("/\\") - 1);
+#endif
+    }
+    else if (opts.camera_type == "opencv") {
+        base_filename = opts.input_file_path.empty() 
+            ? "camera"
+            : opts.input_file_path.substr(opts.input_file_path.find_last_of("/\\") + 1, opts.input_file_path.find_last_of(".") - opts.input_file_path.find_last_of("/\\") - 1);
+    }
+    
+    // Combine with output directory
+    if (opts.output_file_path != DEFAULT_OUTPUT_DIR) {
+        try {
+            std::filesystem::create_directories(opts.output_file_path);
+        } catch (const std::filesystem::filesystem_error& e) {
+            std::cerr << "Error creating output directory: " << e.what() << std::endl;
+        }
+    }
+    
+    std::cout << "Output directory: " << opts.output_file_path << std::endl;
+    filename_output = opts.output_file_path + "/" + base_filename;
 
+    // Save color image
+    cv::imwrite(filename_output + "_color.png", frame);
+    std::cout << "wrote " << filename_output + "_color.png" << "\n";
+
+    // Save corner data to JSON
+    save_corners_to_json(filename_output + "_corners.json");
     if (opts.camera_type == "azure") {
 #ifdef KINECT_AZURE_LIBS
         // Save a colored PLY point cloud aligned to the color image and add marker corner points
         try {
+            if (!saved_k4a_depth_image.is_valid() || !saved_k4a_color_image.is_valid()) {
+                std::cerr << "No saved Azure Kinect frame/point cloud to write (press 's' during capture). Skipping PLY export." << std::endl;
+                return 0;
+            }
             k4a_transformation_t kinect_transform_handle = k4a_transformation_create(&kinect_calibration);
             k4a_image_t k4a_depth_image_handle = saved_k4a_depth_image.handle();
             k4a_image_t k4a_color_image_handle = saved_k4a_color_image.handle();
@@ -517,14 +691,14 @@ int main(int argc, char** argv) {
             bool pc_success = point_cloud_depth_to_color(kinect_transform_handle,
                             k4a_depth_image_handle,
                             k4a_color_image_handle,
-                            saved_marker_corners_3d,
+                            saved_marker_corners_3d.data(),
                             saved_marker_corners_count,
-                            "./images/azure/point_cloud.ply");
+                            filename_output + "_point_cloud.ply");
                             
             if (pc_success) {
-                std::cout << "wrote point_cloud.ply\n";
+                std::cout << "wrote " << filename_output + "_point_cloud.ply" << "\n";
             } else {
-                std::cerr << "Failed to write point_cloud.ply\n";
+                std::cerr << "Failed to write " << filename_output + "_point_cloud.ply" << "\n";
             }
             
             k4a_transformation_destroy(kinect_transform_handle);
@@ -532,10 +706,17 @@ int main(int argc, char** argv) {
         } catch (const std::exception &e) {
             std::cerr << "Exception saving PLY: " << e.what() << "\n";
         }
+
+        kinect_device.stop_cameras();
+        kinect_device.close();
 #endif
     }
     else if (opts.camera_type == "opencv") {
         // For opencv camera, we do not have depth information, so we skip point cloud saving
         std::cout << "No point cloud saved for opencv camera type." << std::endl;
+
+        vc.release();
     }
+
+    detector.reportTimers();
 }
