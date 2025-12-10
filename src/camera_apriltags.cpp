@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <getopt.h>
 #include <vector>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <fstream>
@@ -64,7 +65,7 @@ typedef struct CameraOptions {
         error_fraction(1),
         device_num(0),
         focal_length(500),
-        tag_size(DEFAULT_TAG_SIZE_M),
+        tag_size(DEFAULT_TAG_SIZE_M),focal_length
         frame_width(0),
         frame_height(0),
         mirror_display(false),
@@ -99,18 +100,22 @@ std::map<int, std::vector<TagCorners>> frames_corners_data;
 
 // Function to save corners data to JSON file
 void save_corners_to_json(const std::string& filename) {
-    json output;
+    json output = json::array();
     
-    // Iterate through each frame
+    // Iterate through each frame (std::map keeps frames sorted by frame_number)
     for (const auto& frame_pair : frames_corners_data) {
         int frame_num = frame_pair.first;
         const auto& tags_in_frame = frame_pair.second;
         
-        json frame_data;
+        json frame_obj;
+        frame_obj["frame_number"] = frame_num;
+        
+        json tags_array = json::array();
         
         // Iterate through each tag detected in this frame
         for (const auto& tag : tags_in_frame) {
             json tag_entry;
+            tag_entry["id"] = tag.id;
             
             // Add the 4 corner points for this tag
             json corners_array = json::array();
@@ -123,10 +128,11 @@ void save_corners_to_json(const std::string& filename) {
             }
             
             tag_entry["corners"] = corners_array;
-            frame_data[std::to_string(tag.id)] = tag_entry;
+            tags_array.push_back(tag_entry);
         }
         
-        output[std::to_string(frame_num)] = frame_data;
+        frame_obj["tags"] = tags_array;
+        output.push_back(frame_obj);
     }
     
     // Write to file
@@ -288,6 +294,29 @@ int main(int argc, char** argv) {
     cv::Point2d opticalCenter;
     cv::VideoCapture vc;
 
+    // prepare variables for 3D projection ("opencv" camera type)
+    double s = opts.tag_size;
+    double ss = 0.5*s;
+
+    enum { npoints = 4 };
+
+    cv::Point3d src[npoints] = {
+        cv::Point3d(-ss, -ss, 0),
+        cv::Point3d( ss, -ss, 0),
+        cv::Point3d( ss,  ss, 0),
+        cv::Point3d(-ss,  ss, 0),
+    };
+
+    double f = opts.focal_length;
+
+    double K[9] = {
+        f, 0, opticalCenter.x,
+        0, f, opticalCenter.y,
+        0, 0, 1
+    };
+
+    cv::Mat_<cv::Point3d> srcmat(npoints, 1, src);
+
     // frame to save when 's' is pressed
     cv::Mat saved_frame;
 
@@ -374,6 +403,15 @@ int main(int argc, char** argv) {
                         << kinect_calibration.color_camera_calibration.resolution_width << "x"
                         << kinect_calibration.color_camera_calibration.resolution_height << "\n";
 
+            std::cout << "Intrinsics: " << std::endl;
+            std::cout << kinect_calibration.color_camera_calibration.intrinsics.parameters.param.fx << " "
+                      << kinect_calibration.color_camera_calibration.intrinsics.parameters.param.fy << " "
+                      << kinect_calibration.color_camera_calibration.intrinsics.parameters.param.cx << " "
+                      << kinect_calibration.color_camera_calibration.intrinsics.parameters.param.cy << std::endl;
+            
+
+
+
         }
 
         while (!k4a_color_image_to_cv_mat(k4a_color_image, frame)){
@@ -437,6 +475,7 @@ int main(int argc, char** argv) {
                         << vc.get(cv::CAP_PROP_FRAME_WIDTH) << "x"
                         << vc.get(cv::CAP_PROP_FRAME_HEIGHT) << "\n";
             
+            
         }
 
         vc >> frame;
@@ -494,7 +533,8 @@ int main(int argc, char** argv) {
 
 #endif
         } else if (opts.camera_type == "opencv") {
-           vc >> frame;
+            vc >> frame;
+
         } else {
             std::cerr << "Unknown camera type: " << opts.camera_type << std::endl;
             return -1;
@@ -521,11 +561,11 @@ int main(int argc, char** argv) {
                 
                 TagCorners tag_corners;
                 tag_corners.id = d.id;
-                // for each corner of the detected tag compute 3D location
-                for (int corner_idx = 0; corner_idx < 4; ++corner_idx) {
-
-                    if (opts.camera_type == "azure") {
+                
+                if (opts.camera_type == "azure") {
 #ifdef KINECT_AZURE_LIBS
+                    // for each corner of the detected tag compute 3D location
+                    for (int corner_idx = 0; corner_idx < 4; ++corner_idx) {
                         try
                         {
                             // Get the corner points on azure depth image
@@ -557,7 +597,7 @@ int main(int argc, char** argv) {
                                 marker_corners_3d[marker_corners_count] = this_corner_3d;
 
                                 // also store into tag corners for JSON export
-                                tag_corners.corners.push_back(cv::Point3f(this_corner_3d.xyz.x, this_corner_3d.xyz.y, this_corner_3d.xyz.z));
+                                tag_corners.corners.push_back(cv::Point3f(this_corner_3d.xyz.x, this_corner_3d.xyz.y, this_corner_3d.xyz.z) * 0.001f); // convert mm to meters
                                 ++marker_corners_count;
                             }
                             
@@ -567,13 +607,32 @@ int main(int argc, char** argv) {
                             std::cerr << "Exception in corner 3D computation: " << e.what() << '\n';
                             continue;                                    
                         }
+                    }
 #endif
+                }
+                else if (opts.camera_type == "opencv") {
+                    
+                    // Get the 4x4 transformation matrix (tag frame -> camera frame)
+                    cv::Mat_<double> M = CameraUtil::homographyToPose(f, f, s, detections[i].homography, false);
+
+                    // Extract rotation (3x3) and translation (3x1) from the 4x4 matrix M
+                    cv::Mat_<double> R = M.rowRange(0, 3).colRange(0, 3);
+                    cv::Mat_<double> t = M.rowRange(0, 3).col(3);
+
+                    // Transform each corner from tag frame to camera frame: p_cam = R * p_tag + t
+                    for (int corner_idx = 0; corner_idx < npoints; ++corner_idx) {
+                        cv::Point3d p_tag = src[corner_idx];
+                        cv::Mat_<double> p_tag_mat = (cv::Mat_<double>(3,1) << p_tag.x, p_tag.y, p_tag.z);
+                        cv::Mat_<double> p_cam_mat = R * p_tag_mat + t;
+                        
+                        cv::Point3f corner_3d(
+                            static_cast<float>(p_cam_mat(0, 0)),
+                            static_cast<float>(p_cam_mat(1, 0)),
+                            static_cast<float>(p_cam_mat(2, 0))
+                        );
+                        tag_corners.corners.push_back(corner_3d);
                     }
-                    else if (opts.camera_type == "opencv") {
-                        // For opencv camera, we do not have depth information, so we skip 3D corner computation
-                        tag_corners.corners.push_back(cv::Point3f(d.p[corner_idx].x, d.p[corner_idx].y, 0.0f));
-                    }
-    
+
                 }
 
                 // Accumulate corner data for JSON export                

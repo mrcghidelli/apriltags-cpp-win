@@ -158,8 +158,7 @@ static at::real sq(at::real x) { return x*x; }
 
 }
 
-at::Point project(const at::Mat& H, 
-                    at::real x, at::real y) {
+at::Point project(const at::Mat& H, at::real x, at::real y) {
 
   at::real z = H[2][0]*x + H[2][1]*y + H[2][2];
   
