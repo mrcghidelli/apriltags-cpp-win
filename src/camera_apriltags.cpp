@@ -597,7 +597,7 @@ int main(int argc, char** argv) {
                                 marker_corners_3d[marker_corners_count] = this_corner_3d;
 
                                 // also store into tag corners for JSON export
-                                tag_corners.corners.push_back(cv::Point3f(this_corner_3d.xyz.x, this_corner_3d.xyz.y, this_corner_3d.xyz.z) * 0.001f); // convert mm to meters
+                                tag_corners.corners.push_back(cv::Point3f(this_corner_3d.xyz.x, this_corner_3d.xyz.y, this_corner_3d.xyz.z));
                                 ++marker_corners_count;
                             }
                             
@@ -630,7 +630,7 @@ int main(int argc, char** argv) {
                             static_cast<float>(p_cam_mat(1, 0)),
                             static_cast<float>(p_cam_mat(2, 0))
                         );
-                        tag_corners.corners.push_back(corner_3d);
+                        tag_corners.corners.push_back(corner_3d * 1000.0f); // convert to mm
                     }
 
                 }
