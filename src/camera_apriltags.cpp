@@ -65,7 +65,7 @@ typedef struct CameraOptions {
         error_fraction(1),
         device_num(0),
         focal_length(500),
-        tag_size(DEFAULT_TAG_SIZE_M),focal_length
+        tag_size(DEFAULT_TAG_SIZE_M),
         frame_width(0),
         frame_height(0),
         mirror_display(false),
