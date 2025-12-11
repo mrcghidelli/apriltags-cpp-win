@@ -14,9 +14,11 @@ add_library(apriltags ${INC_LIST} CameraUtil.cpp
   UnionFindSimple.cpp
   getopt.cpp)
 
-set(AT_LIBS apriltags ${OpenCV_LIBS})
+set(APRILTAGS_LIB_DEPS ${OpenCV_LIBS})
 
-target_link_libraries(apriltags ${AT_LIBS})
+target_link_libraries(apriltags ${APRILTAGS_LIB_DEPS})
+
+set(AT_LIBS apriltags ${OpenCV_LIBS})
 
 if(k4a_FOUND AND k4arecord_FOUND AND NOT SKIP_KINECT_AZURE)
   add_executable(camera_apriltags camera_apriltags.cpp azure_kinect_helpers.cpp)
