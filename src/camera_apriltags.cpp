@@ -590,7 +590,7 @@ int main(int argc, char** argv) {
                             depth_point.xy.x = depth_corner.xy.x;
                             depth_point.xy.y = depth_corner.xy.y;
                             k4a_float3_t this_corner_3d;
-                            kinect_calibration.convert_2d_to_3d(depth_point, static_cast<float>(depth_value), K4A_CALIBRATION_TYPE_DEPTH, K4A_CALIBRATION_TYPE_COLOR, &this_corner_3d);
+                            kinect_calibration.convert_2d_to_3d(depth_point, static_cast<float>(depth_value), K4A_CALIBRATION_TYPE_DEPTH, K4A_CALIBRATION_TYPE_DEPTH, &this_corner_3d);
                             
                             // store into marker array if space
                             if (marker_corners_count < max_num_corners_marker) {

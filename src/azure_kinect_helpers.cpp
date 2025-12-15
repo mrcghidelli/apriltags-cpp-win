@@ -276,97 +276,113 @@ bool point_cloud_depth_to_color(k4a_transformation_t transformation_handle,
                                        int marker_corners_count,
                                        std::string file_name)
 {
-    // transform color image into depth camera geometry
-    int color_image_width_pixels = k4a_image_get_width_pixels(color_image);
-    int color_image_height_pixels = k4a_image_get_height_pixels(color_image);
-    k4a_image_t transformed_depth_image = NULL;
-    if (K4A_RESULT_SUCCEEDED != k4a_image_create(K4A_IMAGE_FORMAT_DEPTH16,
-                                                 color_image_width_pixels,
-                                                 color_image_height_pixels,
-                                                 color_image_width_pixels * (int)sizeof(uint16_t),
-                                                 &transformed_depth_image))
-    {
-        printf("Failed to create transformed depth image\n");
-        return false;
-    }
-
+    // Create point cloud in depth camera geometry (without colors)
+    int depth_image_width_pixels = k4a_image_get_width_pixels(depth_image);
+    int depth_image_height_pixels = k4a_image_get_height_pixels(depth_image);
+    
     k4a_image_t point_cloud_image = NULL;
     if (K4A_RESULT_SUCCEEDED != k4a_image_create(K4A_IMAGE_FORMAT_CUSTOM,
-                                                 color_image_width_pixels,
-                                                 color_image_height_pixels,
-                                                 color_image_width_pixels * 3 * (int)sizeof(int16_t),
+                                                 depth_image_width_pixels,
+                                                 depth_image_height_pixels,
+                                                 depth_image_width_pixels * 3 * (int)sizeof(int16_t),
                                                  &point_cloud_image))
     {
         printf("Failed to create point cloud image\n");
         return false;
     }
 
-    if (K4A_RESULT_SUCCEEDED !=
-        k4a_transformation_depth_image_to_color_camera(transformation_handle, depth_image, transformed_depth_image))
-    {
-        printf("Failed to compute transformed depth image\n");
-        return false;
-    }
-    
+    // Create point cloud in depth camera coordinate system
     if (K4A_RESULT_SUCCEEDED != k4a_transformation_depth_image_to_point_cloud(transformation_handle,
-                                                                              transformed_depth_image,
-                                                                              K4A_CALIBRATION_TYPE_COLOR,
+                                                                              depth_image,
+                                                                              K4A_CALIBRATION_TYPE_DEPTH,
                                                                               point_cloud_image))
     {
         printf("Failed to compute point cloud\n");
+        k4a_image_release(point_cloud_image);
         return false;
     }
     
-    // Decode MJPEG color image if compressed
-    k4a_image_t color_image_decoded = NULL;
-    const k4a_image_t* color_to_use = &color_image;
-    
-    size_t color_buffer_size = k4a_image_get_size(color_image);
-    int color_width = k4a_image_get_width_pixels(color_image);
-    int color_height = k4a_image_get_height_pixels(color_image);
-    size_t expected_size = color_width * color_height * 4;
-    
-    if (color_buffer_size < expected_size) {
-        std::cout << "Decoding MJPEG color image..." << std::endl;
-        uint8_t* compressed_buffer = k4a_image_get_buffer(color_image);
-        std::vector<uint8_t> compressed_data(compressed_buffer, compressed_buffer + color_buffer_size);
+    // Write point cloud without colors
+    std::vector<color_point_t> points;
+    int16_t *point_cloud_image_data = (int16_t *)(void *)k4a_image_get_buffer(point_cloud_image);
+
+    for (int i = 0; i < depth_image_width_pixels * depth_image_height_pixels; i++)
+    {
+        color_point_t point;
+        point.xyz[0] = point_cloud_image_data[3 * i + 0];
+        point.xyz[1] = point_cloud_image_data[3 * i + 1];
+        point.xyz[2] = point_cloud_image_data[3 * i + 2];
+        if (point.xyz[2] == 0)
+        {
+            continue;
+        }
         
-        cv::Mat decoded_mat = cv::imdecode(compressed_data, cv::IMREAD_COLOR);
-        if (!decoded_mat.empty()) {
-            // Convert BGR to BGRA
-            cv::Mat bgra_mat;
-            if (decoded_mat.channels() == 3) {
-                cv::cvtColor(decoded_mat, bgra_mat, cv::COLOR_BGR2BGRA);
-            } else {
-                bgra_mat = decoded_mat.clone();
+        // White color for all points
+        point.rgb[0] = 255; // B
+        point.rgb[1] = 255; // G
+        point.rgb[2] = 255; // R
+        points.push_back(point);
+    }
+
+    // Add synthetic red spheres around marker corners
+    const int sphere_radius_mm = 10;
+    const int step_mm = 5;
+    for (int m = 0; m < marker_corners_count; ++m)
+    {
+        float mx = marker_corners_3d[m].xyz.x;
+        float my = marker_corners_3d[m].xyz.y;
+        float mz = marker_corners_3d[m].xyz.z;
+        if (mx == 0.0f && my == 0.0f && mz == 0.0f) continue;
+
+        for (int dz = -sphere_radius_mm; dz <= sphere_radius_mm; dz += step_mm) {
+            for (int dy = -sphere_radius_mm; dy <= sphere_radius_mm; dy += step_mm) {
+                for (int dx = -sphere_radius_mm; dx <= sphere_radius_mm; dx += step_mm) {
+                    int dist_sq = dx*dx + dy*dy + dz*dz;
+                    if (dist_sq > sphere_radius_mm * sphere_radius_mm) continue;
+
+                    color_point_t sp;
+                    int sx = static_cast<int>(std::lround(mx)) + dx;
+                    int sy = static_cast<int>(std::lround(my)) + dy;
+                    int sz = static_cast<int>(std::lround(mz)) + dz;
+                    if (sx < INT16_MIN) sx = INT16_MIN;
+                    if (sx > INT16_MAX) sx = INT16_MAX;
+                    if (sy < INT16_MIN) sy = INT16_MIN;
+                    if (sy > INT16_MAX) sy = INT16_MAX;
+                    if (sz < INT16_MIN) sz = INT16_MIN;
+                    if (sz > INT16_MAX) sz = INT16_MAX;
+                    sp.xyz[0] = static_cast<int16_t>(sx);
+                    sp.xyz[1] = static_cast<int16_t>(sy);
+                    sp.xyz[2] = static_cast<int16_t>(sz);
+                    sp.rgb[0] = 0;   // B
+                    sp.rgb[1] = 0;   // G
+                    sp.rgb[2] = 255; // R
+                    points.push_back(sp);
+                }
             }
-            
-            // Create k4a_image from the decoded data
-            if (K4A_RESULT_SUCCEEDED == k4a_image_create(K4A_IMAGE_FORMAT_COLOR_BGRA32,
-                                                        color_width,
-                                                        color_height,
-                                                        color_width * 4,
-                                                        &color_image_decoded)) {
-                uint8_t* decoded_buffer = k4a_image_get_buffer(color_image_decoded);
-                memcpy(decoded_buffer, bgra_mat.data, color_width * color_height * 4);
-                color_to_use = &color_image_decoded;
-                std::cout << "Color image decoded successfully" << std::endl;
-            } else {
-                std::cerr << "Failed to create decoded color image buffer" << std::endl;
-            }
-        } else {
-            std::cerr << "Failed to decode MJPEG color image" << std::endl;
         }
     }
+
+    // Save to PLY file
+    std::ofstream ofs(file_name);
+    ofs << "ply" << std::endl;
+    ofs << "format ascii 1.0" << std::endl;
+    ofs << "element vertex " << points.size() << std::endl;
+    ofs << "property float x" << std::endl;
+    ofs << "property float y" << std::endl;
+    ofs << "property float z" << std::endl;
+    ofs << "property uchar red" << std::endl;
+    ofs << "property uchar green" << std::endl;
+    ofs << "property uchar blue" << std::endl;
+    ofs << "end_header" << std::endl;
     
-    tranformation_helpers_write_point_cloud(point_cloud_image, *color_to_use, marker_corners_3d, marker_corners_count, file_name.c_str());
-    
-    // Cleanup decoded image if created
-    if (color_image_decoded != NULL) {
-        k4a_image_release(color_image_decoded);
+    for (size_t i = 0; i < points.size(); ++i)
+    {
+        ofs << (float)points[i].xyz[0] << " " << (float)points[i].xyz[1] << " " << (float)points[i].xyz[2];
+        ofs << " " << (float)points[i].rgb[2] << " " << (float)points[i].rgb[1] << " " << (float)points[i].rgb[0];
+        ofs << std::endl;
     }
+    ofs.close();
     
-    k4a_image_release(transformed_depth_image);
     k4a_image_release(point_cloud_image);
     
     return true;
